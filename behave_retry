@@ -1,0 +1,82 @@
+#!/usr/bin/env python
+import behave.model
+
+def retry_run(self, runner):
+    self._cached_status = None
+    runner.context._push()
+    runner.context.feature = self
+
+    # run this feature if the tags say so or any one of its scenarios
+    run_feature = self.should_run(runner.config)
+    if run_feature or runner.config.show_skipped:
+        for formatter in runner.formatters:
+            formatter.feature(self)
+
+    # current tags as a set
+    runner.context.tags = set(self.tags)
+
+    hooks_called = False
+    if not runner.config.dry_run and run_feature:
+        hooks_called = True
+        for tag in self.tags:
+            runner.run_hook('before_tag', runner.context, tag)
+        runner.run_hook('before_feature', runner.context, self)
+
+        # -- RE-EVALUATE SHOULD-RUN STATE:
+        # Hook may call feature.mark_skipped() to exclude it.
+        run_feature = self.should_run()
+
+    if self.background and (run_feature or runner.config.show_skipped):
+        for formatter in runner.formatters:
+            formatter.background(self.background)
+
+    failed_count = 0
+    for scenario in self.scenarios:
+        # -- OPTIONAL: Select scenario by name (regular expressions).
+        if (runner.config.name and
+                 not scenario.should_run_with_name_select(runner.config)):
+            scenario.mark_skipped()
+            continue
+
+        retry_count = 0
+        failed = True
+
+        while failed and retry_count <= 2:
+            failed = scenario.run(runner)
+            if runner.config.stop or runner.aborted:
+                # -- FAIL-EARLY: Stop after first failure.
+                break
+            retry_count += 1
+
+        # break out of the scenario run as well
+        if runner.config.stop or runner.aborted:
+            # -- FAIL-EARLY: Stop after first failure.
+            break
+
+        if failed:
+            failed_count += 1
+
+    if not self.scenarios and not run_feature:
+        # -- SPECIAL CASE: Feature without scenarios
+        self._cached_status = 'skipped'
+
+    if hooks_called:
+        runner.run_hook('after_feature', runner.context, self)
+        for tag in self.tags:
+            runner.run_hook('after_tag', runner.context, tag)
+
+    runner.context._pop()
+
+    if run_feature or runner.config.show_skipped:
+        for formatter in runner.formatters:
+            formatter.eof()
+
+    failed = (failed_count > 0)
+    return failed
+
+
+behave.model.Feature.run = retry_run
+
+from behave import __main__
+
+__main__.main()
